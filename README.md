@@ -1,56 +1,243 @@
 # Radar Console: Test Automation Lab
 
-A small, complete test-automation project: a toy "radar console" web app with **REST API tests**, **browser UI tests in both Selenium and Playwright**, and the same suites running in **three places**: locally, in **Docker**, and in CI on both **GitHub Actions** and **Jenkins**.
+A complete, runnable test-automation project in Python: **REST API tests**, **browser UI tests in both Selenium and Playwright**, a **Docker** test-runner image, and **CI pipelines for GitHub Actions and Jenkins**, all aimed at one small web app.
 
-**Stack:** Python 3 · pytest · requests · Selenium 4 · Playwright · Docker · GitHub Actions · Jenkins (declarative pipeline)
+**Stack:** Python 3 · pytest · requests · Selenium 4 · Playwright · Docker · GitHub Actions · Jenkins
 
 ---
 
-## What it shows
+## 1. The scenario
 
-| Area | Where | Highlights |
+A team is building a **radar operator console**. Operators sign in on a web page and see how many radar **tracks** (detected objects such as drones, vehicles and people) are active. The page gets its data from a small REST API.
+
+This repository plays the role of the team's **SDET (Software Development Engineer in Test)**. It contains:
+
+| Part | What it is | Where |
 |---|---|---|
-| API testing | `tests/test_api.py` | Schema and value-range checks, `parametrize`, negative cases (400 / 401 / 404) |
-| UI testing, Selenium | `tests/test_ui.py`, `tests/pages/login_page.py` | Page Object Model, explicit waits (no `time.sleep`), headless Chrome, screenshot on failure |
-| UI testing, Playwright | `tests/test_ui_playwright.py`, `tests/pages/login_page_pw.py` | User-facing locators, auto-waiting `expect()`, **network mocking** with `page.route`, trace + screenshot on failure |
-| Flakiness, measured | `scripts/demo_sleep_vs_wait.py` | `time.sleep(1)` passed 6/10 runs; an explicit wait passed 10/10 |
-| Containers | `Dockerfile` | Test-runner image on Microsoft's Playwright base; runs API + Playwright suites anywhere |
-| CI: GitHub Actions | `.github/workflows/tests.yml` | API, Playwright and Selenium steps; container job; JUnit XML, screenshots and traces uploaded as artifacts |
-| CI: Jenkins | `Jenkinsfile`, `jenkins/` | Jenkins in Docker, staged pipeline, JUnit trend, archived artifacts, failure notification hook |
+| The app under test | A tiny console: a login page plus a JSON API. Standard-library Python only, so it starts inside the tests. | `app/radar_app.py` |
+| API tests | Check the API contract: status codes, JSON schema, value ranges, bad input, wrong password, unknown routes | `tests/test_api.py` |
+| Selenium UI tests | Drive the login page in headless Chrome, using a page object and explicit waits | `tests/test_ui.py`, `tests/pages/login_page.py` |
+| Playwright UI tests | The same checks in Playwright, plus **mocked API responses** (server outage, different track data) | `tests/test_ui_playwright.py`, `tests/pages/login_page_pw.py` |
+| A flakiness demo | Measures `time.sleep()` against a real wait on the same page | `scripts/demo_sleep_vs_wait.py` |
+| Docker image | Runs the API + Playwright suites in a container, identical on any machine | `Dockerfile` |
+| CI pipelines | Run everything automatically and keep the reports | `.github/workflows/tests.yml`, `Jenkinsfile`, `jenkins/` |
 
-The app under test (`app/radar_app.py`) is standard-library Python. Its login page waits a **random 300–1800 ms** before showing the result, like a real UI behind a network, so tests that guess at timing fail and tests that wait on conditions pass.
+The API the tests exercise:
 
-## Run it
+| Request | Response |
+|---|---|
+| `GET /login` | HTML login page |
+| `GET /api/health` | `{"status": "ok"}` |
+| `GET /api/tracks` | List of 3 tracks: `id`, `range_m`, `azimuth_deg`, `velocity_mps`, `classification` |
+| `POST /api/login` with `{"username": ..., "password": ...}` | `200` + token, `401` wrong password, `400` missing fields or bad JSON |
+
+**The built-in trap:** after you click *Sign in*, the page waits a **random 300–1800 ms** before showing the result, the way a real UI lags behind the network. A test that sleeps for a fixed time passes on some runs and fails on others. A test that waits for a condition passes every time. The suites here show how to handle that correctly.
+
+The demo account `operator / radar123` exists only inside this toy app.
+
+---
+
+## 2. Prerequisites
+
+| Tool | Needed for | Check it's installed |
+|---|---|---|
+| **Git** | Getting the code; Jenkins also builds from Git | `git --version` |
+| **Python 3.10 or newer** | Everything (tested on 3.10, 3.12 and 3.13) | `python3 --version` |
+| **Google Chrome** | Selenium tests and the sleep-vs-wait demo only | Open Chrome → About |
+| **Docker** | The Docker image and the local Jenkins only | `docker --version` and `docker info` |
+
+You do **not** need to install Playwright's browser or ChromeDriver by hand. The setup steps below install Playwright's Chromium, and Selenium Manager (built into Selenium 4) downloads the ChromeDriver that matches your Chrome.
+
+### Install on macOS (with Homebrew)
 
 ```bash
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/playwright install chromium
+# Homebrew, the macOS package manager (skip if `brew --version` already works)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-.venv/bin/pytest                    # everything (18 tests)
-.venv/bin/pytest -m api             # REST API only
-.venv/bin/pytest -m playwright      # Playwright UI
-.venv/bin/pytest -m ui              # Selenium UI (uses your local Chrome)
-HEADED=1 .venv/bin/pytest -m ui     # watch the browser
+brew install git python@3.12        # Git and a current Python
+brew install --cask google-chrome   # only for the Selenium tests
+
+# Docker: either Docker Desktop ...
+brew install --cask docker
+# ... or the lightweight command-line option, Colima + the Docker CLI:
+brew install colima docker
+colima start                        # starts the Docker engine in a small Linux VM
 ```
 
-**In Docker** (API + Playwright suites):
+### Install on Ubuntu / Debian
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip   # python3-venv is required for step 3
+# Chrome (Selenium tests only):
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install -y ./google-chrome-stable_current_amd64.deb
+# Docker: follow https://docs.docker.com/engine/install/ubuntu/
+```
+
+### Windows
+
+Use **WSL 2** (Ubuntu) and follow the Ubuntu steps, with Docker Desktop's WSL integration turned on. The `scripts/*.sh` files are Bash scripts, so they need WSL or Git Bash.
+
+---
+
+## 3. Get the code and set up a virtual environment
+
+**Do this before any `pip` / `pip3` install.** A virtual environment (venv) is a private copy of Python just for this project. Packages install into the project's `.venv/` folder instead of your system Python, so they can't break other projects, and deleting `.venv/` undoes everything.
+
+```bash
+git clone https://github.com/HarvinQ123/sdet-demo-jenkins-docker.git
+cd sdet-demo-jenkins-docker
+```
+
+| Step | Command | What it does |
+|---|---|---|
+| Create the venv (once) | `python3 -m venv .venv` | Makes `.venv/`, a self-contained Python with its own `pip` |
+| Activate it, macOS / Linux / WSL | `source .venv/bin/activate` | Points `python`, `pip` and `pytest` in **this terminal** at `.venv`. Your prompt shows `(.venv)`. |
+| Activate it, Windows PowerShell | `.venv\Scripts\Activate.ps1` | Same, for PowerShell |
+| Check it worked | `which python` (Windows: `where python`) | Should print a path ending in `.venv/bin/python` |
+| Upgrade pip | `python -m pip install --upgrade pip` | Current pip inside the venv; avoids old-installer errors |
+| Install the Python packages | `python -m pip install -r requirements.txt` | pytest, requests, Selenium, Playwright, pytest-playwright (exact versions are pinned in the file) |
+| Install Playwright's browser | `python -m playwright install chromium` | Downloads the Chromium build that Playwright drives (about 150 MB, once per machine) |
+| Leave the venv when done | `deactivate` | Returns the terminal to your system Python |
+
+Activation lasts only for the current terminal window. **Every time you open a new terminal**, `cd` into the project and run `source .venv/bin/activate` again before running tests.
+
+Inside an active venv, `pip` and `pip3` are the same program. `python -m pip` is used above because it always means "the pip that belongs to this Python".
+
+Without activating, you can call the venv's tools by path instead: `.venv/bin/pytest`, `.venv/bin/python`.
+
+---
+
+## 4. Running things: commands and what they do
+
+All commands assume you're in the project folder **with the venv active** (step 3).
+
+### Run the tests
+
+| Command | What runs | Why you'd use it |
+|---|---|---|
+| `pytest` | All 18 tests: 10 API, 3 Selenium, 5 Playwright | Full check before pushing a change |
+| `pytest -m api` | Only tests marked `api` (the REST API tests) | Fastest feedback (under a second). No browser needed. |
+| `pytest -m playwright` | The 5 Playwright UI tests, headless | UI checks, including the mocked-backend tests |
+| `pytest -m ui` | The 3 Selenium UI tests, headless Chrome | UI checks with Selenium; needs Google Chrome |
+| `pytest -m "api or playwright"` | Combines markers | Everything that runs without Google Chrome (this is what the Docker image runs) |
+| `pytest -k invalid_login` | Every test whose name contains `invalid_login` (one per UI tool) | Re-run just the test you're working on |
+| `pytest -x` | Stops at the first failure | Saves time when many tests fail for one reason |
+| `pytest --junitxml=reports/results.xml` | Any of the above, plus a JUnit XML report | The report format CI servers read to show pass/fail trends |
+
+**How it works:** the tests start the app themselves. A pytest fixture in `tests/conftest.py` launches `radar_app.py` on a free port before the first test and shuts it down after the last, so there's no server to start by hand. `-m` picks tests by the markers defined in `pytest.ini`, and `-v` (verbose, one line per test) is on by default there.
+
+### Watch the browser, and debug failures
+
+| Command | What it does | Why |
+|---|---|---|
+| `HEADED=1 pytest -m ui` | Runs the Selenium tests in a visible Chrome window | See what the test is clicking. Headless is the default because CI machines have no screen. |
+| `pytest -m playwright --headed --slowmo 500` | Visible browser, with a 500 ms pause before each Playwright action | Slows things down enough to follow by eye |
+| `python -m playwright show-trace reports/playwright/<test-folder>/trace.zip` | Opens Playwright's trace viewer for a failed test | Replay the failure step by step: DOM snapshots, network calls, console output |
+
+When a UI test fails, evidence is saved automatically:
+- Selenium: a screenshot in `reports/screenshots/`, written by a hook in `conftest.py`.
+- Playwright: a screenshot and a trace in `reports/playwright/`, set up through `--screenshot` / `--tracing` in `pytest.ini`.
+
+### See the flakiness problem for yourself
+
+```bash
+python scripts/demo_sleep_vs_wait.py
+```
+
+This logs in 10 times with `time.sleep(1)` and 10 times with an explicit `WebDriverWait`, then prints the pass count and total time for each. The sleep version usually passes only **6–7 of 10** (it varies run to run, which is the point), while the wait version passes **10/10** every time. That's the reason no test in this repo uses `time.sleep`. Needs Google Chrome.
+
+### Poke at the app by hand
+
+```bash
+python app/radar_app.py --port 5050          # starts the app; leave it running (Ctrl+C stops it)
+```
+
+Then, in a **second** terminal:
+
+```bash
+curl http://127.0.0.1:5050/api/health        # -> {"status": "ok"}         is the server up?
+curl http://127.0.0.1:5050/api/tracks        # -> list of 3 tracks         the data the UI displays
+curl -i -X POST http://127.0.0.1:5050/api/login \
+     -H "Content-Type: application/json" \
+     -d '{"username": "operator", "password": "wrong"}'
+                                             # -> HTTP 401 + error JSON    -i prints the status line
+```
+
+You can also open http://127.0.0.1:5050/login in a browser and sign in yourself. These are the same requests and pages the tests check automatically.
+
+### One-command local run
+
+```bash
+bash scripts/run_tests_local.sh              # all tests
+bash scripts/run_tests_local.sh -m api       # any pytest options are passed through
+```
+
+The script creates `.venv` if it's missing, installs the requirements and Playwright's Chromium, then runs pytest with a JUnit report in `reports/results.xml`. It doesn't need the venv activated, because it uses `.venv/bin/...` paths directly.
+
+---
+
+## 5. Run the tests in Docker
+
+Docker makes the test environment identical everywhere: same OS, same Python, same browser. That's how "passes on my machine" becomes "passes in CI". Docker must be running (`docker info` answers; with Colima, run `colima start`).
 
 ```bash
 docker build -t sdet-lab-tests .
-docker run --rm sdet-lab-tests
 ```
-
-**In Jenkins** (runs locally in Docker, bound to 127.0.0.1):
+Builds an image from `Dockerfile`, starting from Microsoft's official Playwright image (Ubuntu, Python and Chromium are already installed). It then installs `requirements.txt` and copies in the app and tests. Unchanged layers are cached, so rebuilds take seconds.
 
 ```bash
-bash scripts/start_jenkins.sh       # then open http://127.0.0.1:8080/job/sdet-lab/ and click Build Now
-bash scripts/stop_jenkins.sh
+docker run --rm sdet-lab-tests
+```
+Starts a container from the image, runs `pytest -m "api or playwright"` (15 tests), prints the results, and `--rm` deletes the container afterwards. The Selenium tests aren't included because they need Google Chrome, which this image doesn't have. They run in the Jenkins image instead.
+
+To keep the JUnit report from a container run:
+
+```bash
+docker run --name sdet-run sdet-lab-tests        # same run, but the container is kept
+docker cp sdet-run:/work/reports ./reports       # copy its reports/ folder out
+docker rm sdet-run                               # then remove the container
 ```
 
-Jenkins builds what is committed to Git. The lab Jenkins skips the setup wizard and has no login, which is only acceptable because it listens on localhost.
+---
 
-**GitHub Actions** runs on every push and pull request to `main`. Reports are attached to each run as artifacts.
+## 6. Run the pipeline in Jenkins (local, in Docker)
+
+```bash
+bash scripts/start_jenkins.sh
+```
+This script:
+1. Starts Docker through Colima if it isn't running.
+2. Builds a Jenkins image (Jenkins LTS + Python + Chromium + pipeline plugins).
+3. Starts it at **http://127.0.0.1:8080**, with this project mounted read-only and a job called `sdet-lab` already created.
+
+Open http://127.0.0.1:8080/job/sdet-lab/ and click **Build Now**. The `Jenkinsfile` runs these stages: *Setup Python* → *API tests* → *UI tests (Selenium)* → *UI tests (Playwright)*. It then publishes the JUnit results (with a trend graph) and archives `reports/`, including failure screenshots.
+
+```bash
+bash scripts/stop_jenkins.sh            # removes the Jenkins container; build history is kept
+bash scripts/stop_jenkins.sh --purge    # also deletes the build history
+colima stop                             # stops the Docker VM (Colima users)
+```
+
+Notes:
+- Jenkins checks out the **committed** code on the `main` branch, so commit a change before clicking *Build Now*.
+- This Jenkins skips the setup wizard and has no login. That's only acceptable because it listens on 127.0.0.1 and can't be reached from another machine. Don't reuse these settings on a real server.
+
+---
+
+## 7. GitHub Actions
+
+`.github/workflows/tests.yml` runs automatically on every push and pull request to `main`. You can also start it from the **Actions** tab (*Run workflow*). It has two jobs that run in parallel:
+
+| Job | Steps |
+|---|---|
+| `tests` | Set up Python 3.12 → install requirements and Playwright Chromium → API tests → Playwright tests → Selenium tests (using the runner's Chrome) → upload `reports/` |
+| `docker` | Build the test image → run the suite inside it → copy out and upload its reports |
+
+Each run's JUnit XML, screenshots and traces can be downloaded under **Artifacts** on its page in the Actions tab. With the GitHub CLI, `gh run list` shows recent runs, and `gh run watch` follows one live.
+
+---
 
 ## Project layout
 
@@ -63,64 +250,53 @@ tests/
   test_api.py                 REST API tests
   test_ui.py                  Selenium UI tests
   test_ui_playwright.py       Playwright UI tests, incl. mocked backend responses
-scripts/                      local runner, Jenkins start/stop, sleep-vs-wait demo
-jenkins/                      Jenkins image (LTS + Python + Chromium) and job bootstrap
+scripts/
+  run_tests_local.sh          one-command local run
+  demo_sleep_vs_wait.py       sleep-vs-wait flakiness demo
+  start_jenkins.sh            build + start local Jenkins in Docker
+  stop_jenkins.sh             stop it
+jenkins/                      Jenkins image (Dockerfile) and job bootstrap script
 Dockerfile                    test-runner image
-Jenkinsfile                   pipeline: setup, API, Selenium, Playwright, publish
+Jenkinsfile                   Jenkins pipeline
 .github/workflows/tests.yml   GitHub Actions workflow
+pytest.ini                    markers, report and failure-artifact settings
+requirements.txt              pinned Python packages
 ```
+
+---
 
 ## Design notes
 
-### Wait for conditions, never for time
+**Wait for conditions, never for time.** Selenium code polls a condition with `WebDriverWait(driver, 5).until(EC.visibility_of_element_located(...))` and returns the moment it's true. Playwright's actions and `expect()` assertions retry on their own. Implicit and explicit waits are never mixed, because their timeouts stack unpredictably.
 
-```python
-# Flaky: the page needs 0.3-1.8 s, so this fails whenever it needs more than 1 s.
-page.login("operator", "radar123")
-time.sleep(1)
+**Page objects.** Each page is one class that holds its locators and user-level actions; tests contain intent and assertions only. A markup change means editing one class, not every test.
 
-# Selenium: poll a condition, return as soon as it's true, give up after 5 s.
-WebDriverWait(driver, 5).until(EC.visibility_of_element_located((By.ID, "welcome")))
-
-# Playwright: assertions retry on their own.
-expect(page.locator("#welcome")).to_have_text("Welcome, operator. 3 active tracks.")
-```
-
-Measured with `scripts/demo_sleep_vs_wait.py` (10 logins each): `time.sleep(1)` passed **6/10**; `WebDriverWait` passed **10/10**. Implicit and explicit waits are never mixed, because their timeouts stack unpredictably.
-
-### Page objects
-
-Each page is one class that holds its locators and exposes user-level actions; tests contain intent and assertions only. A markup change means editing one class, not every test. The Selenium and Playwright page objects cover the same page, so the two tools can be compared directly.
-
-### Selenium vs Playwright, side by side
+**Selenium and Playwright, side by side.**
 
 | | Selenium (`test_ui.py`) | Playwright (`test_ui_playwright.py`) |
 |---|---|---|
 | Waiting | Explicit `WebDriverWait` + `expected_conditions` | Auto-wait on actions; `expect()` retries |
 | Locators | IDs (`By.ID`) | Label and role (`get_by_label`, `get_by_role`) |
 | Network control | None built in | `page.route()` to stub or fail API calls |
-| Failure evidence | Screenshot (custom hook in `conftest.py`) | Screenshot + replayable trace (`--tracing=retain-on-failure`) |
-| Browser setup | Chrome + matching driver | `playwright install chromium` |
+| Failure evidence | Screenshot (custom hook) | Screenshot + replayable trace |
 
-### Testing the UI against a mocked backend
+**Mocking the backend.** `page.route()` answers the browser's API calls from inside the test, so failure paths that are hard to produce on a real server can be checked directly:
+- `/api/login` returns **503**: the page must show the server's message rather than hang.
+- `/api/tracks` returns **5 tracks**: the page must say 5, which proves the count comes from the API and isn't hard-coded.
 
-`page.route()` answers the browser's API calls from the test, so failure paths that are hard to produce on a real server can be checked directly:
+**Headless in CI.** Chrome runs with `--headless=new`, a fixed window size (layouts change at small widths) and the container flags `--no-sandbox` / `--disable-dev-shm-usage`.
 
-- `/api/login` returns **503** → the page must show the server's message rather than hang or crash.
-- `/api/tracks` returns **5 tracks** → the welcome line must say 5, which proves the count is read from the API and not hard-coded.
-
-### Headless in CI
-
-Chrome runs with `--headless=new`, a fixed window size (layouts change at small widths) and the container flags `--no-sandbox` / `--disable-dev-shm-usage`. Because nobody watches a CI run, every UI failure saves evidence: a screenshot for Selenium, a screenshot and trace for Playwright. CI keeps both as artifacts.
+---
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `Cannot connect to the Docker daemon` | Start Docker (on macOS with Colima: `colima start`) |
-| Port 8080 in use | `docker ps` or `lsof -i :8080` to find what's running |
-| Jenkins doesn't see a change | Commit it; Jenkins checks out `main` |
-| Selenium driver error | Update Chrome; Selenium Manager fetches the matching driver. Set `SELENIUM_MANAGER=1` to ignore any `chromium` on `PATH` |
-| Playwright says the browser is missing | `.venv/bin/playwright install chromium` |
-
-The `operator / radar123` account exists only inside the toy app.
+| `error: externally-managed-environment` when running pip | You're installing into system Python. Create and activate the venv (step 3) first. |
+| `pytest: command not found` | The venv isn't active in this terminal: `source .venv/bin/activate` |
+| `No module named venv` / `ensurepip is not available` (Ubuntu) | `sudo apt install python3-venv` |
+| Playwright: *Executable doesn't exist* | `python -m playwright install chromium` |
+| Selenium: driver or Chrome errors | Install or update Google Chrome; Selenium Manager fetches a matching driver. Set `SELENIUM_MANAGER=1` to ignore any `chromium` on your `PATH`. |
+| `Cannot connect to the Docker daemon` | Start Docker Desktop, or run `colima start` |
+| Port 8080 already in use | `docker ps` or `lsof -i :8080` to see what's using it |
+| Jenkins doesn't pick up a change | Commit it; Jenkins builds the committed `main` branch |
