@@ -1,0 +1,78 @@
+# CI on GitHub Actions. The same suites also run in Jenkins (see Jenkinsfile).
+#   tests:  API + Playwright + Selenium on the runner, JUnit XML + failure artifacts uploaded
+#   docker: builds the test-runner image and runs the API + Playwright suites inside it
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          python -m playwright install --with-deps chromium
+
+      - name: API tests
+        run: pytest -m api --junitxml=reports/api.xml
+
+      - name: Playwright UI tests
+        if: ${{ !cancelled() }}
+        run: pytest -m playwright --junitxml=reports/playwright.xml
+
+      - name: Selenium UI tests
+        if: ${{ !cancelled() }}
+        env:
+          SELENIUM_MANAGER: "1"   # use the runner's Google Chrome + a matching driver
+        run: pytest -m ui --junitxml=reports/selenium.xml
+
+      - name: Upload reports (JUnit XML, screenshots, traces)
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: reports/
+          if-no-files-found: ignore
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build test image
+        run: docker build -t sdet-lab-tests .
+
+      - name: Run tests in the container
+        run: docker run --name sdet-run sdet-lab-tests
+
+      - name: Copy reports out of the container
+        if: ${{ !cancelled() }}
+        run: docker cp sdet-run:/work/reports ./reports || true
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: docker-test-reports
+          path: reports/
+          if-no-files-found: ignore
