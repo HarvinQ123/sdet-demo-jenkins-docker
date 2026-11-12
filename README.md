@@ -6,6 +6,31 @@ A complete, runnable test-automation project in Python: **REST API tests**, **br
 
 ---
 
+## Quick start
+
+Already have Git, Python 3.10+ and Google Chrome? This is everything (sections 2 and 3 explain each line):
+
+```bash
+git clone https://github.com/HarvinQ123/sdet-demo-jenkins-docker.git
+cd sdet-demo-jenkins-docker
+python3 -m venv .venv                       # once: a private Python for this project
+source .venv/bin/activate                   # every new terminal (Windows PowerShell: .venv\Scripts\Activate.ps1)
+python -m pip install -r requirements.txt   # once
+python -m playwright install chromium       # once
+pytest                                      # expect: 18 passed
+```
+
+**What runs the tests?** `pytest`, every time. You don't start the app, a server or a browser yourself: a pytest fixture starts the app on a free port, and Selenium and Playwright open the browser. Docker, Jenkins and GitHub Actions are optional, and each one just runs the same `pytest` in a different place (sections 5 to 7).
+
+| Setup step | Where | Done when you see |
+|---|---|---|
+| 1. Install the tools | [Section 2](#2-prerequisites) | `python3 --version` prints 3.10 or newer |
+| 2. Get the code, create the venv, install packages | [Section 3](#3-get-the-code-and-set-up-a-virtual-environment) | Prompt shows `(.venv)` |
+| 3. Confirm it works | [Section 3](#confirm-the-setup-works) | `pytest` prints **18 passed** |
+| 4. Optional: Docker, Jenkins, GitHub Actions | Sections [5](#5-run-the-tests-in-docker), [6](#6-run-the-pipeline-in-jenkins-local-in-docker), [7](#7-github-actions) | 15 passed in Docker; green pipelines |
+
+---
+
 ## 1. The scenario
 
 A team is building a **radar operator console**. Operators sign in on a web page and see how many radar **tracks** (detected objects such as drones, vehicles and people) are active. The page gets its data from a small REST API.
@@ -107,6 +132,31 @@ Inside an active venv, `pip` and `pip3` are the same program. `python -m pip` is
 
 Without activating, you can call the venv's tools by path instead: `.venv/bin/pytest`, `.venv/bin/python`.
 
+**Check the install:** `python -m pip list` should include `pytest 8.3.3`, `requests 2.32.3`, `selenium 4.25.0`, `playwright 1.48.0` and `pytest-playwright 0.5.2`.
+
+### Confirm the setup works
+
+Run these in order. Each one checks one more piece of the setup:
+
+| Type | You should see | If not |
+|---|---|---|
+| `pytest -m api` | `10 passed, 8 deselected` in about half a second | The venv isn't active, or the packages aren't installed |
+| `pytest -m playwright` | `5 passed, 13 deselected` | Run `python -m playwright install chromium` |
+| `pytest -m ui` | `3 passed, 15 deselected` | Google Chrome is missing or out of date |
+| `pytest` | **`18 passed`** in about 20 seconds | Run the three lines above to find which part fails |
+
+When `pytest` prints **18 passed**, setup is done. Docker, Jenkins and GitHub Actions (sections 5 to 7) are optional extras.
+
+### Every new terminal
+
+```bash
+cd sdet-demo-jenkins-docker      # the project folder
+source .venv/bin/activate        # activation only lasts for the current terminal window
+pytest                           # or any command from section 4
+```
+
+Forgetting `source .venv/bin/activate` is the most common cause of `pytest: command not found`. `bash scripts/run_tests_local.sh` works without activating.
+
 ---
 
 ## 4. Running things: commands and what they do
@@ -180,7 +230,9 @@ The script creates `.venv` if it's missing, installs the requirements and Playwr
 
 ## 5. Run the tests in Docker
 
-Docker makes the test environment identical everywhere: same OS, same Python, same browser. That's how "passes on my machine" becomes "passes in CI". Docker must be running (`docker info` answers; with Colima, run `colima start`).
+**Optional.** The tests don't need Docker: `pytest` runs all of them locally. Docker makes the test environment identical everywhere: same OS, same Python, same browser. That's how "passes on my machine" becomes "passes in CI". Docker must be running (`docker info` answers; with Colima, run `colima start`).
+
+Inside the container, the same thing happens as on your laptop: `pytest` starts the app on a free port inside the container, and the tests (and Playwright's Chromium) talk to it there. Nothing is exposed to your machine.
 
 ```bash
 docker build -t sdet-lab-tests .
@@ -191,6 +243,8 @@ Builds an image from `Dockerfile`, starting from Microsoft's official Playwright
 docker run --rm sdet-lab-tests
 ```
 Starts a container from the image, runs `pytest -m "api or playwright"` (15 tests), prints the results, and `--rm` deletes the container afterwards. The Selenium tests aren't included because they need Google Chrome, which this image doesn't have. They run in the Jenkins image instead.
+
+**Check:** the run ends with `15 passed`. The first `docker build` downloads Microsoft's Playwright base image, which is large, so allow a few minutes. When you're done, `colima stop` frees the memory.
 
 To keep the JUnit report from a container run:
 
@@ -214,6 +268,8 @@ This script:
 
 Open http://127.0.0.1:8080/job/sdet-lab/ and click **Build Now**. The `Jenkinsfile` runs these stages: *Setup Python* → *API tests* → *UI tests (Selenium)* → *UI tests (Playwright)*. It then publishes the JUnit results (with a trend graph) and archives `reports/`, including failure screenshots.
 
+**Check:** the script prints `Jenkins is up: http://127.0.0.1:8080/job/sdet-lab/`. After *Build Now*, the stage view shows all four stages green and **Test Result** lists 18 tests. Here Docker only hosts Jenkins; Jenkins itself runs `pytest` in its workspace.
+
 ```bash
 bash scripts/stop_jenkins.sh            # removes the Jenkins container; build history is kept
 bash scripts/stop_jenkins.sh --purge    # also deletes the build history
@@ -236,6 +292,8 @@ Notes:
 | `docker` | Build the test image → run the suite inside it → copy out and upload its reports |
 
 Each run's JUnit XML, screenshots and traces can be downloaded under **Artifacts** on its page in the Actions tab. With the GitHub CLI, `gh run list` shows recent runs, and `gh run watch` follows one live.
+
+**Check:** both jobs, `tests` and `docker`, show green check marks. Nothing needs installing for this; it runs on GitHub's machines. To try it yourself, **fork** the repo. The workflow then runs in your fork on every push, or from its Actions tab.
 
 ---
 
@@ -300,3 +358,5 @@ requirements.txt              pinned Python packages
 | `Cannot connect to the Docker daemon` | Start Docker Desktop, or run `colima start` |
 | Port 8080 already in use | `docker ps` or `lsof -i :8080` to see what's using it |
 | Jenkins doesn't pick up a change | Commit it; Jenkins builds the committed `main` branch |
+| `ModuleNotFoundError: No module named 'app'` | You're not in the project folder. `cd` into it; `pytest.ini` puts it on the import path. |
+| A UI test fails | Look in `reports/screenshots/` (Selenium), or replay the Playwright trace: `python -m playwright show-trace reports/playwright/<test-folder>/trace.zip` |
